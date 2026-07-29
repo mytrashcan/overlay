@@ -129,9 +129,6 @@ namespace OsuEnlightenOverlay.Memory
             // finalSeq가 seq+1 이어야 함 (위에서 seq, 여기서 seq+1).
             // finalSeq 값을 다시 헤더에 기록 — reader가 read 시작/끝에 같은 값인지 검증.
             accessor.Write(0, ref finalSeq);
-
-            // 변경사항 즉시 반영 — view buffer flush. 매 프레임 호출은 비용 있지만 데이터 신뢰성 우선.
-            accessor.Flush();
         }
 
         /// <summary>

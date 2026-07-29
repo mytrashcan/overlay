@@ -31,7 +31,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         Dictionary<int, OsuMemoryReader.HitObjectJudgement> judgementsByStartTime = new Dictionary<int, OsuMemoryReader.HitObjectJudgement>(64);
 
         // 활성 HitBurst 스프라이트 추적 — 별도 SpriteManager 사용 시 만료된 것을 직접 제거.
-        List<pAnimation> activeBursts = new List<pAnimation>();
+        List<pSprite> activeBursts = new List<pSprite>();
         Random reusedRandom = new Random(); // 매 프레임 new 방지
 
         // 이전 프레임 시간 — Retry 감지용 (시간이 크게 역행하면 retry)
@@ -64,7 +64,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                     startTimeToIndex[objects[k].StartTime] = k;
             }
             // 맵 변경 시 기존 HitBurst 모두 제거
-            foreach (pAnimation b in activeBursts)
+            foreach (pSprite b in activeBursts)
                 spriteManager.Remove(b);
             activeBursts.Clear();
         }
@@ -76,7 +76,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         /// </summary>
         public void ResetForResume()
         {
-            foreach (pAnimation b in activeBursts)
+            foreach (pSprite b in activeBursts)
                 spriteManager.Remove(b);
             activeBursts.Clear();
             hitSeen.Clear();
@@ -92,7 +92,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             if (lastTimeMs > 0 && timeMs < lastTimeMs - 2000)
             {
                 // 시간이 2초 이상 역행 → retry
-                foreach (pAnimation b in activeBursts)
+                foreach (pSprite b in activeBursts)
                     spriteManager.Remove(b);
                 activeBursts.Clear();
                 hitSeen.Clear();
@@ -108,7 +108,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         /// </summary>
         public void ReAddActive()
         {
-            foreach (pAnimation b in activeBursts)
+            foreach (pSprite b in activeBursts)
                 spriteManager.Add(b);
         }
 
@@ -121,7 +121,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         {
             for (int i = activeBursts.Count - 1; i >= 0; i--)
             {
-                pAnimation b = activeBursts[i];
+                pSprite b = activeBursts[i];
                 // 마지막 Transformation의 종료 시각 확인
                 int endTime = 0;
                 if (b.Transformations != null && b.Transformations.Count > 0)
@@ -185,6 +185,10 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             // Retry 감지 — 시간 역행 시 기존 HitBurst/hitSeen 리셋
             CheckRetry(timeMs);
 
+            judgementsByStartTime.Clear();
+            for (int i = 0; i < judgements.Count; i++)
+                judgementsByStartTime[judgements[i].StartTime] = judgements[i];
+
             int hitCount = 0, createdCount = 0, skippedSeen = 0, skippedData = 0, skippedFuture = 0;
 
             for (int i = 0; i < judgements.Count; i++)
@@ -225,7 +229,8 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 // ScoreValue → spriteName 결정 — StartTime 기반 콤보 분석으로 Geki/Katu 계산
                 // 스피너는 ScoreValue가 회전 중 intermediate 값이므로, 판정 완료 시 300(hitra)으로 강제.
                 int effectiveScoreValue = isSpinner ? 300 : j.ScoreValue;
-                int effectiveHitValue = isSpinner ? 1024 : ComputeComboAdditionByStartTime(j.StartTime, j.ScoreValue, j.HitValue, judgements);
+                int effectiveHitValue = isSpinner ? 1024 : ComputeComboAdditionByStartTime(
+                    j.StartTime, j.ScoreValue, j.HitValue, judgementsByStartTime);
                 string spriteName = GetSpriteName(effectiveScoreValue, effectiveHitValue);
                 if (string.IsNullOrEmpty(spriteName))
                 {
@@ -302,7 +307,8 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         /// StartTime 기반 콤보 addition 계산 — .osu 파일의 NewCombo 정보 사용.
         /// judgements 인덱스가 아닌 StartTime으로 beatmapObjects에서 객체 찾기.
         /// </summary>
-        int ComputeComboAdditionByStartTime(int startTimeVal, int scoreValue, int hitValue, List<OsuMemoryReader.HitObjectJudgement> judgements)
+        int ComputeComboAdditionByStartTime(int startTimeVal, int scoreValue, int hitValue,
+            Dictionary<int, OsuMemoryReader.HitObjectJudgement> judgementsByStartTime)
         {
             if (scoreValue == 0) return 0;
             if (beatmapObjects == null) return hitValue;
@@ -322,11 +328,6 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 endOfCombo = beatmapObjects[objIndex + 1].NewCombo;
 
             if (!endOfCombo) return hitValue;
-
-            // judgements를 StartTime → judgement Dictionary로 변환 — 재사용 (GC 방지)
-            judgementsByStartTime.Clear();
-            for (int m = 0; m < judgements.Count; m++)
-                judgementsByStartTime[judgements[m].StartTime] = judgements[m];
 
             int comboKatu = 0;
             int comboBad = 0;
@@ -550,6 +551,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                     timeMs, timeMs + particleLife, EasingTypes.In));
 
                 spriteManager.Add(particle);
+                activeBursts.Add(particle);
             }
         }
 
@@ -594,7 +596,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         public void Reset()
         {
             hitSeen.Clear();
-            foreach (pAnimation b in activeBursts)
+            foreach (pSprite b in activeBursts)
                 spriteManager.Remove(b);
             activeBursts.Clear();
         }

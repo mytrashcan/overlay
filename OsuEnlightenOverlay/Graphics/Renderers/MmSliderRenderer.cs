@@ -329,7 +329,7 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             // FBO 생성 (depth buffer 포함) — osu! stable: new RenderTarget2D(texture, DepthComponent16)
             // 이미 있으면 재사용 — 크기가 고정이라 내용만 다시 그리면 된다.
             if (fboTarget == null)
-                fboTarget = new RenderTarget2D(fboWidth, fboHeight, true, false);
+                fboTarget = new RenderTarget2D(fboWidth, fboHeight, true, true);
             RenderTarget2D target = fboTarget;
 
             target.Bind();
@@ -540,8 +540,16 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             }
             textureCache.Clear();
 
-            if (quadBatch != null) quadBatch.Dispose();
-            if (halfCircleBatch != null) halfCircleBatch.Dispose();
+            if (quadBatch != null)
+            {
+                quadBatch.Dispose();
+                quadBatch = null;
+            }
+            if (halfCircleBatch != null)
+            {
+                halfCircleBatch.Dispose();
+                halfCircleBatch = null;
+            }
         }
     }
 }

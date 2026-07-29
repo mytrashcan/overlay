@@ -218,6 +218,11 @@ namespace OsuEnlightenOverlay.Memory
             cachedMaxDuration = 0;
             hoCacheReady = false;
             lastBeatmapObj = IntPtr.Zero;
+            lastValidatedBeatmapObj = IntPtr.Zero;
+            lastValidatedHomCount = -1;
+            lastValidatedFirstObject = IntPtr.Zero;
+            homPrefixValidationFrames = 0;
+            lastHomPrefixValidationTicks = 0;
             longObjectIndices.Clear();
             lastHomLogTag = null;
             lastHomLogTicks = 0;
@@ -943,6 +948,24 @@ namespace OsuEnlightenOverlay.Memory
         int cachedMaxDuration = 0;
         bool hoCacheReady = false;
         IntPtr lastBeatmapObj = IntPtr.Zero;
+
+        struct HomSnapshot
+        {
+            public IntPtr Hom;
+            public IntPtr List;
+            public IntPtr Items;
+            public IntPtr FirstObject;
+            public int Count;
+        }
+
+        IntPtr lastValidatedBeatmapObj = IntPtr.Zero;
+        IntPtr lastValidatedFirstObject = IntPtr.Zero;
+        int lastValidatedHomCount = -1;
+        int homPrefixValidationFrames = 0;
+        long lastHomPrefixValidationTicks = 0;
+        const int HomPrefixValidationFrameInterval = 60;
+        static readonly long HomPrefixValidationTickInterval = TimeSpan.TicksPerSecond;
+
         // 긴 객체(슬라이더/스피너) 인덱스 — StartTime 창 밖에 있어도 EndTime 기준 활성 시 읽음
         readonly List<int> longObjectIndices = new List<int>(64);
         readonly List<int> reusedReadIndices = new List<int>(128);
@@ -1200,11 +1223,12 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
-        /// 주어진 Player→HOM / HOM→list 오프셋이 .osu 와 맞는지 검증.
+        /// 주어진 Player→HOM / HOM→list 오프셋에서 현재 리스트 스냅샷을 읽는다.
         /// </summary>
-        bool TryVerifyHomAt(IntPtr playerObj, int playerOff, int listOff, out int count)
+        bool TryReadHomAt(IntPtr playerObj, int playerOff, int listOff, out HomSnapshot snapshot)
         {
-            count = 0;
+            snapshot = new HomSnapshot();
+
             IntPtr homCand;
             if (!pm.ReadPointer(playerObj + playerOff, out homCand)) return false;
             if (!LooksLikeHeapPtr((uint)homCand.ToInt32())) return false;
@@ -1217,32 +1241,75 @@ namespace OsuEnlightenOverlay.Memory
             if (!pm.ReadPointer(listCand + 0x04, out items)) return false;
             if (!LooksLikeHeapPtr((uint)items.ToInt32())) return false;
 
+            int count;
             if (!pm.ReadInt32(listCand + 0x10, out count) || count < 1) return false;
+
+            IntPtr firstObject;
+            if (!pm.ReadPointer(items + 0x08, out firstObject)) return false;
+            if (!LooksLikeHeapPtr((uint)firstObject.ToInt32())) return false;
+
+            snapshot.Hom = homCand;
+            snapshot.List = listCand;
+            snapshot.Items = items;
+            snapshot.FirstObject = firstObject;
+            snapshot.Count = count;
+            return true;
+        }
+
+        /// <summary>
+        /// 주어진 Player→HOM / HOM→list 오프셋이 .osu 와 맞는지 검증.
+        /// 검증 중 읽은 리스트 스냅샷은 호출자가 같은 프레임에 재사용한다.
+        /// </summary>
+        bool TryVerifyHomAt(IntPtr playerObj, int playerOff, int listOff, out HomSnapshot snapshot)
+        {
+            if (!TryReadHomAt(playerObj, playerOff, listOff, out snapshot))
+                return false;
 
             int osuCount = GetOsuVerifyCount();
             int expectedExpanded = CalcExpectedHomCount();
             bool countOk = osuCount <= 0
-                || Math.Abs(count - osuCount) <= 2
-                || (expectedExpanded > 0 && Math.Abs(count - expectedExpanded) <= 2);
+                || Math.Abs(snapshot.Count - osuCount) <= 2
+                || (expectedExpanded > 0 && Math.Abs(snapshot.Count - expectedExpanded) <= 2);
             if (!countOk) return false;
 
-            return VerifyHomItemsPrefix(items, count, Math.Min(3, count));
+            return VerifyHomItemsPrefix(snapshot.Items, snapshot.Count, Math.Min(3, snapshot.Count));
         }
 
-        // HOM 오프셋 자동 감지 (AOB 실패 시 fallback). 시드 → 실측 상수 → 전수 스캔.
-        bool DetectHomOffsets(IntPtr playerObj)
+        bool ShouldValidateHomPrefix(IntPtr beatmapObj, HomSnapshot snapshot)
         {
-            if (playerObj == IntPtr.Zero) return false;
+            homPrefixValidationFrames++;
+            long now = DateTime.UtcNow.Ticks;
+            return beatmapObj != lastValidatedBeatmapObj
+                || snapshot.Count != lastValidatedHomCount
+                || snapshot.FirstObject != lastValidatedFirstObject
+                || homPrefixValidationFrames >= HomPrefixValidationFrameInterval
+                || now - lastHomPrefixValidationTicks >= HomPrefixValidationTickInterval;
+        }
 
-            int osuCount = GetOsuVerifyCount();
-            int expectedExpanded = CalcExpectedHomCount();
+        void MarkHomPrefixValidated(IntPtr beatmapObj, HomSnapshot snapshot)
+        {
+            lastValidatedBeatmapObj = beatmapObj;
+            lastValidatedHomCount = snapshot.Count;
+            lastValidatedFirstObject = snapshot.FirstObject;
+            homPrefixValidationFrames = 0;
+            lastHomPrefixValidationTicks = DateTime.UtcNow.Ticks;
+        }
 
-            // 이미 잡힌 오프셋이 .osu 와 안 맞으면 폐기 (잘못된 AOB list 0x34 등)
-            if (foundHomListOff >= 0 && foundPlayerHomOff >= 0)
+        bool ResolveHomSnapshot(IntPtr playerObj, IntPtr beatmapObj, out HomSnapshot snapshot)
+        {
+            if (foundPlayerHomOff >= 0 && foundHomListOff >= 0)
             {
-                int c;
-                if (TryVerifyHomAt(playerObj, foundPlayerHomOff, foundHomListOff, out c))
-                    return true;
+                if (TryReadHomAt(playerObj, foundPlayerHomOff, foundHomListOff, out snapshot))
+                {
+                    if (!ShouldValidateHomPrefix(beatmapObj, snapshot))
+                        return true;
+
+                    if (VerifyHomItemsPrefix(snapshot.Items, snapshot.Count, Math.Min(3, snapshot.Count)))
+                    {
+                        MarkHomPrefixValidated(beatmapObj, snapshot);
+                        return true;
+                    }
+                }
 
                 Console.WriteLine("[HOM] bad_off clear 0x" + foundPlayerHomOff.ToString("X")
                     + "/0x" + foundHomListOff.ToString("X"));
@@ -1252,20 +1319,35 @@ namespace OsuEnlightenOverlay.Memory
                 offsetsFromAob = false;
             }
 
+            if (!DetectHomOffsets(playerObj, out snapshot))
+                return false;
+
+            MarkHomPrefixValidated(beatmapObj, snapshot);
+            return true;
+        }
+
+        // HOM 오프셋 자동 감지 (AOB 실패 시 fallback). 시드 → 실측 상수 → 전수 스캔.
+        bool DetectHomOffsets(IntPtr playerObj, out HomSnapshot snapshot)
+        {
+            snapshot = new HomSnapshot();
+            if (playerObj == IntPtr.Zero) return false;
+
+            int osuCount = GetOsuVerifyCount();
+            int expectedExpanded = CalcExpectedHomCount();
+
             // 1) 세션 시드 (이전 detect_ok)
             if (foundHomListOff < 0)
             {
                 if (preferredPlayerHomOff >= 0 && preferredHomListOff >= 0)
                 {
-                    int c;
                     int pOff = foundPlayerHomOff >= 0 ? foundPlayerHomOff : preferredPlayerHomOff;
-                    if (TryVerifyHomAt(playerObj, pOff, preferredHomListOff, out c))
+                    if (TryVerifyHomAt(playerObj, pOff, preferredHomListOff, out snapshot))
                     {
                         foundPlayerHomOff = pOff;
                         foundHomListOff = preferredHomListOff;
                         offsetsFromSeed = true;
                         Console.WriteLine("[HOM] seed_hit off=0x" + foundPlayerHomOff.ToString("X")
-                            + "/0x" + foundHomListOff.ToString("X") + " count=" + c);
+                            + "/0x" + foundHomListOff.ToString("X") + " count=" + snapshot.Count);
                         return true;
                     }
                 }
@@ -1273,17 +1355,16 @@ namespace OsuEnlightenOverlay.Memory
                 // 2) 실측 상수 0x44/0x48 (시드 없을 때 빠른 경로)
                 if (foundPlayerHomOff < 0 || foundPlayerHomOff == Offsets.Player_HitObjectManager_Measured)
                 {
-                    int c;
                     int pOff = foundPlayerHomOff >= 0
                         ? foundPlayerHomOff
                         : Offsets.Player_HitObjectManager_Measured;
-                    if (TryVerifyHomAt(playerObj, pOff, Offsets.Hom_HitObjects_Measured, out c))
+                    if (TryVerifyHomAt(playerObj, pOff, Offsets.Hom_HitObjects_Measured, out snapshot))
                     {
                         foundPlayerHomOff = pOff;
                         foundHomListOff = Offsets.Hom_HitObjects_Measured;
                         LockHomSeed(foundPlayerHomOff, foundHomListOff, "measured");
                         Console.WriteLine("[HOM] detect_ok off=0x" + foundPlayerHomOff.ToString("X")
-                            + "/0x" + foundHomListOff.ToString("X") + " count=" + c);
+                            + "/0x" + foundHomListOff.ToString("X") + " count=" + snapshot.Count);
                         return true;
                     }
                 }
@@ -1326,11 +1407,21 @@ namespace OsuEnlightenOverlay.Memory
                     if (!VerifyHomItemsPrefix(items, count, prefix))
                         continue;
 
+                    IntPtr firstObject;
+                    if (!pm.ReadPointer(items + 0x08, out firstObject)
+                        || !LooksLikeHeapPtr((uint)firstObject.ToInt32()))
+                        continue;
+
                     foundPlayerHomOff = off;
                     foundHomListOff = listOff;
                     LockHomSeed(off, listOff, "heuristic");
                     Console.WriteLine("[HOM] detect_ok off=0x" + off.ToString("X")
                         + "/0x" + listOff.ToString("X") + " count=" + count);
+                    snapshot.Hom = homCand;
+                    snapshot.List = listCand;
+                    snapshot.Items = items;
+                    snapshot.FirstObject = firstObject;
+                    snapshot.Count = count;
                     return true;
                 }
 
@@ -1369,26 +1460,14 @@ namespace OsuEnlightenOverlay.Memory
             if (!pm.ReadPointer(playerInstanceSlot, out playerObj) || !LooksLikeHeapPtr((uint)playerObj.ToInt32()))
                 return ReturnStaleOrEmpty("no_player");
 
-            // 오프셋 미완이면 휴리스틱 (AOB가 list만 못 잡은 경우 포함)
-            // 매 프레임: 기존 off 검증 → 실패 시 클리어 후 재탐지 (잘못된 AOB 0x34 복구)
-            if (!DetectHomOffsets(playerObj))
+            // 포인터 체인은 매 프레임 따라가되, 비싼 .osu prefix 검증은 맵/list identity
+            // 변화 또는 저빈도 watchdog에서만 수행한다.
+            HomSnapshot homSnapshot;
+            if (!ResolveHomSnapshot(playerObj, beatmapObj, out homSnapshot))
                 return ReturnStaleOrEmpty("detect_fail");
 
-            IntPtr hom;
-            if (!pm.ReadPointer(playerObj + foundPlayerHomOff, out hom) || !LooksLikeHeapPtr((uint)hom.ToInt32()))
-                return ReturnStaleOrEmpty("no_hom_ptr");
-
-            IntPtr listObj;
-            if (!pm.ReadPointer(hom + foundHomListOff, out listObj) || !LooksLikeHeapPtr((uint)listObj.ToInt32()))
-                return ReturnStaleOrEmpty("no_list");
-
-            IntPtr itemsArr;
-            if (!pm.ReadPointer(listObj + 0x04, out itemsArr) || !LooksLikeHeapPtr((uint)itemsArr.ToInt32()))
-                return ReturnStaleOrEmpty("no_items");
-
-            int hitCount;
-            if (!pm.ReadInt32(listObj + 0x10, out hitCount) || hitCount <= 0)
-                return ReturnStaleOrEmpty("count0", hitCount, GetOsuVerifyCount());
+            IntPtr itemsArr = homSnapshot.Items;
+            int hitCount = homSnapshot.Count;
 
             int osuCount = GetOsuVerifyCount();
             if (osuCount > 0 && hitCount > osuCount + 32)

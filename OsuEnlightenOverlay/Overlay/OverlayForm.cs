@@ -36,6 +36,7 @@ namespace OsuEnlightenOverlay.Overlay
         IntPtr osuHwnd = IntPtr.Zero;
         System.Diagnostics.Stopwatch renderStopwatch;
         double fpsCapInterval = 0; // 0 = unlimited
+        bool started;
         OsuMemoryReader reader;
         // 공유 메모리 브로드캐스터 — Reconstructor(OTD 플러그인)가 reader의 live 상태를 읽어감.
         // UI 스레드에서만 write (OnSyncTick). reader는 외부 프로세스(Reconstructor)에서 접근.
@@ -560,6 +561,9 @@ namespace OsuEnlightenOverlay.Overlay
         /// </summary>
         public void StartOverlay()
         {
+            if (started)
+                return;
+
             osuHwnd = WindowInterop.FindOsuWindow(reader.ProcessId);
             if (osuHwnd == IntPtr.Zero)
             {
@@ -568,6 +572,7 @@ namespace OsuEnlightenOverlay.Overlay
             }
 
             SyncToOsu();
+            started = true;
             // 타이머 해상도 1ms로 설정 — 정밀한 FPS 측정/제한용
             WindowInterop.timeBeginPeriod(1);
             renderStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -584,6 +589,10 @@ namespace OsuEnlightenOverlay.Overlay
         /// </summary>
         public void StopOverlay()
         {
+            if (!started)
+                return;
+
+            started = false;
             Application.Idle -= OnApplicationIdle;
             // 타이머 해상도 복원
             WindowInterop.timeEndPeriod(1);
@@ -1200,19 +1209,42 @@ namespace OsuEnlightenOverlay.Overlay
         {
             if (disposing)
             {
-                // 타이머 해상도 복원 (혹시 StopOverlay에서 안 됐을 경우)
-                try { WindowInterop.timeEndPeriod(1); } catch { }
+                StopOverlay();
                 if (mouseAimAssist != null)
                 {
                     mouseAimAssist.Dispose();
                     mouseAimAssist = null;
                 }
+                if (hom != null)
+                {
+                    hom.Dispose();
+                    hom = null;
+                }
+                if (fontRenderer != null)
+                {
+                    fontRenderer.Dispose();
+                    fontRenderer = null;
+                }
+                if (hudRenderer != null)
+                {
+                    hudRenderer.Dispose();
+                    hudRenderer = null;
+                }
                 if (renderer != null)
+                {
                     renderer.Dispose();
+                    renderer = null;
+                }
                 if (glControl != null)
+                {
                     glControl.Dispose();
+                    glControl = null;
+                }
                 if (stateBroadcaster != null)
+                {
                     stateBroadcaster.Dispose();
+                    stateBroadcaster = null;
+                }
             }
             base.Dispose(disposing);
         }

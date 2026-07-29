@@ -17,7 +17,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
     /// HitObject 관리자 — osu! stable HitObjectManager 포팅.
     /// HitObject 리스트 관리, Update, Draw.
     /// </summary>
-    internal class HitObjectManagerOsu
+    internal class HitObjectManagerOsu : IDisposable
     {
         // osu! stable 상수
         const int FollowLineDistance = 32;
@@ -961,6 +961,19 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         memEndTime = spinner.EndTime;
                 }
                 spinner.UpdateState(timeMs, floatRot, spinState, memEndTime, scoringRot, memReq);
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (SliderOsu slider in sliders)
+                slider.Dispose();
+            sliders.Clear();
+
+            if (sliderRenderer != null)
+            {
+                sliderRenderer.Dispose();
+                sliderRenderer = null;
             }
         }
     }
